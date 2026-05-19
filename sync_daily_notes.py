@@ -27,6 +27,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 from todoist_api_python.api import TodoistAPI
+import httpx
+import msal
 import requests
 import logging
 from exchangelib import Credentials, Account, Configuration
@@ -396,7 +398,8 @@ class ObsidianDailySync:
         try:
             # Initialize Todoist
             if self.todoist_token:
-                self.todoist = TodoistAPI(self.todoist_token)
+                todoist_client = httpx.Client(trust_env=False)
+                self.todoist = TodoistAPI(self.todoist_token, client=todoist_client)
                 logger.info("Todoist client initialized")
             else:
                 logger.warning("TODOIST_API_TOKEN not set")
@@ -462,7 +465,92 @@ class ObsidianDailySync:
         except Exception as e:
             logger.error(f"Error fetching Todoist tasks: {e}")
             return {'overdue': [], 'due_today': [], 'due_this_week': []}
-    
+
+    def get_all_active_todoist_tasks(self):
+        """Fetch all active Todoist tasks for matching against checked note items."""
+        if not self.todoist:
+            return []
+
+        try:
+            tasks_paginator = self.todoist.get_tasks()
+            paginator_list = list(tasks_paginator)
+            tasks = []
+            for page in paginator_list:
+                tasks.extend(page)
+            return tasks
+        except Exception as e:
+            logger.error(f"Error fetching all active Todoist tasks: {e}")
+            return []
+
+    @staticmethod
+    def normalize_task_text(text):
+        """Normalize task text for matching by content."""
+        if not text:
+            return ""
+        normalized = re.sub(r'\s+', ' ', text).strip().lower()
+        return normalized
+
+    @staticmethod
+    def clean_checked_task_text(text):
+        """Remove due date and priority suffixes from a checked task line."""
+        cleaned = text.strip()
+        cleaned = re.sub(r'\s*\(due:\s*\d{4}-\d{2}-\d{2}\)\s*$', '', cleaned)
+        cleaned = re.sub(r'\s*[🔴🟠🟡]+\s*$', '', cleaned)
+        return cleaned.strip()
+
+    def extract_checked_todoist_task_texts(self, content):
+        """Extract checked task texts from the task sections of the agenda note."""
+        if not content:
+            return []
+
+        section_pattern = r'### (Overdue|Due today|Due this week)\s*(.*?)(?=\n### |\n---|\Z)'
+        checked_texts = []
+
+        for match in re.finditer(section_pattern, content, flags=re.S):
+            section_body = match.group(2)
+            for line in section_body.splitlines():
+                item_match = re.match(r'^\s*[-*+]\s*\[[xX]\]\s*(.+)$', line)
+                if item_match:
+                    cleaned = self.clean_checked_task_text(item_match.group(1))
+                    if cleaned:
+                        checked_texts.append(cleaned)
+
+        return checked_texts
+
+    def complete_checked_todoist_items(self, note_content):
+        """Mark checked Todoist task items in the agenda note as complete in Todoist."""
+        if not self.todoist or not note_content:
+            return 0
+
+        checked_texts = self.extract_checked_todoist_task_texts(note_content)
+        if not checked_texts:
+            return 0
+
+        active_tasks = self.get_all_active_todoist_tasks()
+        if not active_tasks:
+            return 0
+
+        tasks_by_normalized = {}
+        for task in active_tasks:
+            task_text = self.normalize_task_text(task.content)
+            tasks_by_normalized.setdefault(task_text, []).append(task)
+
+        completed_count = 0
+        for checked_text in checked_texts:
+            normalized = self.normalize_task_text(checked_text)
+            if normalized in tasks_by_normalized and tasks_by_normalized[normalized]:
+                task = tasks_by_normalized[normalized].pop(0)
+                try:
+                    if self.todoist.complete_task(task.id):
+                        completed_count += 1
+                        logger.info(f"Marked Todoist task complete from note: {task.content} ({task.id})")
+                    else:
+                        logger.warning(f"Failed to mark Todoist task complete: {task.content} ({task.id})")
+                except Exception as e:
+                    logger.error(f"Error completing Todoist task '{task.content}' ({task.id}): {e}")
+
+        return completed_count
+
     def format_tasks_markdown(self, tasks, category="today"):
         """Format tasks as markdown list with due dates."""
         if not tasks:
@@ -807,6 +895,25 @@ class ObsidianDailySync:
                 print(f"    {self.template_path}")
             return False
     
+    def test_todoist_raw_tasks(self):
+        """Test: Print all raw tasks returned from Todoist (for debugging)."""
+        print("\n" + "="*70)
+        print("🧪 TODOIST RAW TASKS TEST")
+        print("="*70 + "\n")
+        if not self.todoist:
+            print("  ❌ Todoist client not initialized.")
+            return
+        try:
+            tasks_paginator = self.todoist.get_tasks()
+            paginator_list = list(tasks_paginator)
+            tasks = paginator_list[0] if paginator_list else []
+            print(f"Found {len(tasks)} tasks (raw):\n")
+            for task in tasks:
+                print(json.dumps(task.to_dict() if hasattr(task, 'to_dict') else task.__dict__, indent=2, default=str))
+            print("\nDone.")
+        except Exception as e:
+            print(f"  ❌ Error fetching raw Todoist tasks: {e}")
+    
     def sync(self):
         """Main sync function."""
         logger.info("Starting daily note sync...")
@@ -817,19 +924,31 @@ class ObsidianDailySync:
             
             # Read current content, or load template if note doesn't exist
             content = self.read_daily_note(note_path)
+            completed_note_tasks = 0
             if content is None:
                 logger.info("Daily note doesn't exist, creating from template...")
                 content = self.load_template()
                 if content is None:
                     logger.error("Cannot proceed without template")
                     return False
-            
+            else:
+                completed_note_tasks = self.complete_checked_todoist_items(content)
+                if completed_note_tasks > 0:
+                    logger.info(f"Marked {completed_note_tasks} task(s) complete in Todoist from checked note items")
+
             # Fetch data
             logger.info("Fetching Todoist tasks...")
             tasks = self.get_todoist_tasks()
             
+            # Fetch calendar - non-fatal if unavailable
+            events = []
+            calendar_available = True
             logger.info("Fetching Outlook calendar events via Microsoft Graph...")
-            events = self.get_exchange_calendar_events()
+            try:
+                events = self.get_exchange_calendar_events()
+            except Exception as e:
+                calendar_available = False
+                logger.warning(f"Calendar unavailable (will skip calendar events): {e}")
             
             # Update content
             updated_content = self.update_daily_note_content(content, tasks, events)
@@ -844,7 +963,12 @@ class ObsidianDailySync:
                 print(f"📝 File: {note_path}")
                 print(f"📋 Overdue tasks: {len(tasks['overdue'])}")
                 print(f"✓ Due today: {len(tasks['due_today'])}")
-                print(f"📅 Calendar events: {len(events)}")
+                if not calendar_available:
+                    print(f"📅 Calendar events: ⚠️ (unavailable - token expired or offline)")
+                else:
+                    print(f"📅 Calendar events: {len(events)}")
+                if completed_note_tasks > 0:
+                    print(f"✅ Marked {completed_note_tasks} checked task(s) complete in Todoist")
             
             return success
         
@@ -886,6 +1010,11 @@ Schedule:
         action='store_true',
         help='Skip creating backup of daily note before updating'
     )
+    parser.add_argument(
+        '--test-tasks',
+        action='store_true',
+        help='Print all raw Todoist tasks (debugging)'
+    )
     
     args = parser.parse_args()
     
@@ -896,17 +1025,18 @@ Schedule:
     
     try:
         sync = ObsidianDailySync()
-        
+        # Test Todoist raw tasks
+        if args.test_tasks:
+            sync.test_todoist_raw_tasks()
+            exit(0)
         # Test mode
         if args.test:
             success = sync.test_connectivity()
             exit(0 if success else 1)
-        
         # Normal sync mode
         logger.info("Starting daily note sync...")
         success = sync.sync()
         exit(0 if success else 1)
-        
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         exit(1)
