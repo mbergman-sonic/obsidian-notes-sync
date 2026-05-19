@@ -7,8 +7,10 @@ Automatically generate daily work agenda notes by syncing Todoist tasks and Micr
 - ✅ **Manual or Scheduled:** Run anytime or automatically M-F at 8:00 AM
 - 🧪 **Connectivity Testing:** Verify Todoist & Exchange access before sync
 - 🔍 **Debug Mode:** Verbose output for troubleshooting changes
+- ✅ **Checked agenda sync:** Completed `- [x]` items in the agenda are marked complete in Todoist
 - 📋 **Smart Task Filtering:** Overdue, today, this week (with due dates)
 - 📅 **Smart Calendar Filtering:** Only relevant meetings (skips all-day, short events, noise)
+- 🛡️ **Resilient:** Tasks sync even if calendar is unavailable (token expired, offline, etc.)
 - 🎯 **Config-Driven:** Easy to customize for different roles/companies
 - 🔐 **Secure:** Credentials stored in `.env` (not committed to git)
 
@@ -33,7 +35,18 @@ This script:
 
 The script runs independently of Obsidian — Obsidian just reads the finished file.
 
-## 🚀 Quick Start
+## �️ Resilience & Fault Tolerance
+
+The sync process is designed to complete even when some services are unavailable:
+
+- **Tasks always sync:** Todoist task refresh completes even if calendar is unavailable
+- **Calendar is optional:** If your Microsoft Graph token expires or the connection fails, tasks still refresh and update your note
+- **Checked items always complete:** Marked-complete tasks in your agenda are synced to Todoist even if calendar fetch fails
+- **Graceful degradation:** The note will show `⚠️ (unavailable - token expired or offline)` for calendar events when they can't be fetched
+
+This means you can rely on the sync to keep your tasks current throughout the day, regardless of calendar auth issues.
+
+## �🚀 Quick Start
 
 ### 1. Install Dependencies
 ```bash
@@ -89,6 +102,9 @@ python sync_daily_notes.py
 # Test connectivity to Todoist & Exchange
 python sync_daily_notes.py --test
 
+# Print all raw Todoist tasks for debugging
+python sync_daily_notes.py --test-tasks
+
 # Sync with detailed debug output
 python sync_daily_notes.py --verbose
 
@@ -120,6 +136,13 @@ Checks:
 - ✅ Exchange/Outlook connection and calendar access
 - ✅ Obsidian vault path exists
 - ✅ Daily note file exists/path correct
+
+### Raw Todoist Task Debugging
+```bash
+python sync_daily_notes.py --test-tasks
+```
+
+This prints the raw Todoist task payloads returned from the API so you can verify what is being pulled in.
 
 Expected output:
 ```
