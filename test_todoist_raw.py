@@ -1,18 +1,27 @@
+import os
+import unittest
+
+
+@unittest.skipUnless(
+    os.getenv('RUN_TODOIST_INTEGRATION_TESTS') == '1',
+    'Set RUN_TODOIST_INTEGRATION_TESTS=1 to run Todoist integration tests.',
+)
+class TestTodoistRaw(unittest.TestCase):
     def test_todoist_raw_tasks(self):
-        """Test: Print all raw tasks returned from Todoist (for debugging)."""
-        print("\n" + "="*70)
-        print("🧪 TODOIST RAW TASKS TEST")
-        print("="*70 + "\n")
-        if not self.todoist:
-            print("  ❌ Todoist client not initialized.")
-            return
+        token = os.getenv('TODOIST_API_TOKEN')
+        self.assertTrue(token, 'TODOIST_API_TOKEN must be set to run this integration test.')
+
         try:
-            tasks_paginator = self.todoist.get_tasks()
-            paginator_list = list(tasks_paginator)
-            tasks = paginator_list[0] if paginator_list else []
-            print(f"Found {len(tasks)} tasks (raw):\n")
-            for task in tasks:
-                print(json.dumps(task.to_dict() if hasattr(task, 'to_dict') else task.__dict__, indent=2, default=str))
-            print("\nDone.")
-        except Exception as e:
-            print(f"  ❌ Error fetching raw Todoist tasks: {e}")
+            from todoist_api_python.api import TodoistAPI
+        except Exception as exc:
+            self.skipTest(f'todoist_api_python is not available: {exc}')
+
+        api = TodoistAPI(token)
+        tasks = api.get_tasks()
+
+        # Integration smoke assertion: API should return a list-like object.
+        self.assertIsInstance(tasks, list)
+
+
+if __name__ == '__main__':
+    unittest.main()

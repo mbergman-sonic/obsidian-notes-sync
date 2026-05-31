@@ -115,3 +115,30 @@ See **MANUAL_RUN_GUIDE.md** for:
 - Task Scheduler management
 - Detailed troubleshooting
 - FAQ
+
+## Classify to Clarity (Quick)
+
+After you run `sync_daily_notes.py` and generate an agenda file, use the classification skill to map meetings to Clarity task codes and generate per-day JSON for review.
+
+CLI (quick):
+```bash
+python classify.py --date 2026-05-28
+python classify.py --date 2026-05-28 --corrections-csv resources/clarity-corrections.csv
+# Optional: append a human-readable table to the agenda note:
+python classify.py --date 2026-05-28 --append
+# Optional: write a markdown artifact alongside the daily JSON:
+python classify.py --date 2026-05-28 --output-md
+# Run multiple days (inclusive range), grouped by day:
+python classify.py --start-date 2026-05-26 --end-date 2026-05-29
+```
+
+Programmatic (quick):
+```python
+from classification import classify_text
+agenda = open('Work/Sonic/Daily/2026-05-28_Agenda.md').read()
+csv = open('resources/Clarity-definitions.csv').read()
+summary = classify_text(agenda, csv, '2026-05-28')
+print(summary)
+```
+
+The CLI writes each day's structured JSON to `Work/Sonic/Clarity Processing/YYYY-MM-DD_clarity.json`; add `--output-md` to also write `YYYY-MM-DD_clarity.md` for Obsidian visibility. It does not modify agenda files unless `--append` is provided.

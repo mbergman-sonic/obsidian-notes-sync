@@ -338,6 +338,85 @@ Get-ScheduledTask | Where-Object { $_.TaskName -like "*Obsidian*" }
 - **IMPLEMENTATION.md** — Technical details of spec implementation
 - **README.md** — This file
 
+## 🔎 Clarity classification
+
+This repository includes a reusable classification skill that maps events in a daily agenda to Clarity task codes (TSK IDs). The core functions are pure (no side effects) so they are easy to test and reuse programmatically or via the CLI.
+
+- Package: `classification/` (pure core)
+  - `classification/parsers.py` — agenda and CSV parsers (pure)
+  - `classification/classifier.py` — rule-based mapping and per-event output (pure)
+  - `classification/formatters.py` — markdown formatter
+  - `classification/__init__.py` — public API (`classify_text`, `classify_day`, helpers)
+- CLI: `classify.py` — convenience wrapper that reads agenda files, runs classification, writes one JSON file per day to `Work/Sonic/Clarity Processing`, and optionally appends a Markdown summary to the agenda file when `--append` is passed.
+
+Programmatic example (pure):
+```python
+from classification import classify_text, format_summary_markdown
+
+agenda_text = open('Work/Sonic/Daily/2026-05-28_Agenda.md', encoding='utf-8').read()
+clarity_csv = open('resources/Clarity-definitions.csv', encoding='utf-8').read()
+
+summary = classify_text(agenda_text, clarity_csv, '2026-05-28')  # pure, no IO
+print(summary)
+print(format_summary_markdown(summary))
+```
+
+CLI usage:
+```bash
+python classify.py --date 2026-05-28
+python classify.py --date 2026-05-28 --append            # optional: append human-readable table to agenda
+python classify.py --date 2026-05-28 --corrections-csv resources/clarity-corrections.csv
+python classify.py --date 2026-05-28 --clean-legacy-clarity
+python classify.py --date 2026-05-28 --output-md
+python classify.py --date 2026-05-28 --clarity-csv resources/Clarity-definitions.csv --vault-path "C:\Users\michael.bergman\Command"
+python classify.py --date 2026-05-28 --output-json out.json
+python classify.py --start-date 2026-05-26 --end-date 2026-05-29
+python classify.py --start-date 2026-05-26 --end-date 2026-05-29 --clean-legacy-clarity
+```
+
+Summary JSON shape (example):
+```json
+{
+  "date": "YYYY-MM-DD",
+  "entries": [
+    {
+      "task_name": "...",
+      "task_code": "...",
+      "project": "...",
+      "hours": 2.5,
+      "source_event": "Meeting 1"
+    }
+  ],
+  "event_count": 5
+}
+```
+
+Notes:
+- By default the CLI does not modify agenda files.
+- Use `--append` if you want a human-readable Markdown table added to the end of the agenda file.
+- Use `--clean-legacy-clarity` to remove previously appended legacy Clarity summary blocks from agenda files.
+- Each processed day writes a JSON file to `Work/Sonic/Clarity Processing/YYYY-MM-DD_clarity.json`.
+- Use `--output-md` to also write `Work/Sonic/Clarity Processing/YYYY-MM-DD_clarity.md` for Obsidian-friendly review.
+- Optional feedback loop: maintain `resources/clarity-corrections.csv` and rerun classification to force corrected mappings for matching `source_event` (and optional `date`).
+- `--vault-path` is optional only when `OBSIDIAN_VAULT_PATH` is set in `.env`; otherwise `--vault-path` is required.
+- Range mode (`--start-date` + `--end-date`) runs each date inclusively and returns JSON grouped by day.
+- In range mode, missing agenda files are reported in `skipped_dates` and do not fail the run.
+- The pure function `classify_text(agenda_text, clarity_csv_text, date_str, llm_classifier=None, corrections_csv_text=None)` accepts an optional `llm_classifier(event)` hook that should return `(project, task_name, task_code)` for a given event and optional corrections CSV text for deterministic overrides.
+- No additional dependencies were added. See `classify_test.py` for a minimal example test.
+
+TODO (Payroll Rollup):
+- Add a payroll-period rollup mode that accepts `--start-date` and `--end-date` for a 15-day window.
+- Produce an additional consolidated rollup JSON file for the selected payroll period (while keeping per-day files).
+
+Corrections CSV format:
+```csv
+date,source_event,project,task_name,task_code,hours
+2026-05-28,Team Sync,Administration,Internal Meetings,TSK001172,1.0
+```
+- `source_event`, `project`, `task_name`, and `task_code` are required.
+- `date` is optional; include it to scope a correction to one day.
+- `hours` is optional and ignored for override matching.
+
 ## 🔄 Workflow
 
 ### Daily Automated Schedule (M-F 8:00 AM)

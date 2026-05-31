@@ -1,0 +1,75 @@
+﻿Name ,Total,Saturday 9,Sunday 10,"Monday 11 , Total 8.00",Tuesday 12,Wednesday 13,Thursday 14,Friday 15,Role ,Input Type Code 
+,8,Sat. 9,Sun. 10,Mon. 11,Tue. 12,Wed. 13,Thu. 14,Fri. 15,,
+,,,, ,,,,,,
+Administration (PRJ-114),,,,,,,,,,
+Intake / Request Review (TSK001368),,,,,,,,,*IT Director,Regular
+Internal Meetings (TSK001172), ,,, ,,,,,*IT Director,Regular
+Jira Administration (TSK001654),,,,,,,,,*IT Director,Regular
+Training (TSK001173),,,,,,,,,*IT Director,Regular
+Data Engineering Enhancements (PRJ-130),,,,,,,,,,
+Business Requirements (TSK001176),,,,,,,,,*IT Director,Regular
+Current State Analysis (TSK001175),,,,,,,,,*IT Director,Regular
+Data Analysis (TSK001174),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (New Features) (TSK001180),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (Production) (TSK001181),,,,,,,,,*IT Director,Regular
+Development - New Features (TSK001178),,,,,,,,,*IT Director,Regular
+Development - Technical Debt (TSK001179),,,,,,,,,*IT Director,Regular
+"Production Support, Monitoring & Triage (TSK001182)",,,,,,,,,*IT Director,Regular
+Project Management (TSK001568),,,,,,,,,*IT Director,Regular
+Technical Design & Documentation (TSK001177),,,,,,,,,*IT Director,Regular
+Testing - New Features (TSK001183),,,,,,,,,*IT Director,Regular
+Testing - Technical Debt (TSK001184),,,,,,,,,*IT Director,Regular
+Database Upgrade (PRJ-135),,,,,,,,,,
+Break/Fix on Existing Hardware / Software / Apps (TSK000853),,,,,,,,,*IT Director,Regular
+Data Transfers Existing to New (TSK000855),,,,,,,,,*IT Director,Regular
+Define Current State (TSK000827),,,,,,,,,*IT Director,Regular
+Internal IT Project Work (TSK000830),,,,,,,,,*IT Director,Regular
+Internal Operations (TSK000831),2,,,2,,,,,*IT Director,Regular
+Testing / Automation / Test Plans - Existing Hardware / Software / Apps (TSK000850),,,,,,,,,*IT Director,Regular
+Training (TSK000851),,,,,,,,,*IT Director,Regular
+MuleSoft Enhancements (PRJ-134),,,,,,,,,,
+Business Requirements (TSK001176),,,,,,,,,*IT Director,Regular
+Current State Analysis (TSK001175),,,,,,,,,*IT Director,Regular
+Data Analysis (TSK001174),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (New Features) (TSK001180),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (Production) (TSK001181),,,,,,,,,*IT Director,Regular
+Development - New Features (TSK001178),,,,,,,,,*IT Director,Regular
+Development - Technical Debt (TSK001179),,,,,,,,,*IT Director,Regular
+"Production Support, Monitoring & Triage (TSK001182)",,,,,,,,,*IT Director,Regular
+Project Management (TSK001572),,,,,,,,,*IT Director,Regular
+Technical Design & Documentation (TSK001177),,,,,,,,,*IT Director,Regular
+Testing - New Features (TSK001183),,,,,,,,,*IT Director,Regular
+Testing - Technical Debt (TSK001184),,,,,,,,,*IT Director,Regular
+PTO (PRJ-113),,,,,,,,,,
+Bereavement (TSK001168),,,,,,,,,*IT Director,Regular
+Community Service (TSK001169),,,,,,,,,*IT Director,Regular
+Jury Duty (TSK001170),,,,,,,,,*IT Director,Regular
+Sick (TSK001171),,,,,,,,,*IT Director,Regular
+Vacation (TSK001167),,,,,,,,,*IT Director,Regular
+Salesforce Marketing - Enhancements (PRJ-141),,,,,,,,,,
+Business Requirements (TSK001176),2,,,2,,,,,*IT Director,Regular
+Current State Analysis (TSK001175),2,,,2,,,,,*IT Director,Regular
+Data Analysis (TSK001174),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (New Features) (TSK001180),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (Production) (TSK001181),,,,,,,,,*IT Director,Regular
+Development - New Features (TSK001178),,,,,,,,,*IT Director,Regular
+Development - Technical Debt (TSK001179),,,,,,,,,*IT Director,Regular
+"Production Support, Monitoring & Triage (TSK001182)",,,,,,,,,*IT Director,Regular
+Project Management (TSK001577),,,,,,,,,*IT Director,Regular
+Technical Design & Documentation (TSK001177),,,,,,,,,*IT Director,Regular
+Testing - New Features (TSK001183),,,,,,,,,*IT Director,Regular
+Testing - Technical Debt (TSK001184),,,,,,,,,*IT Director,Regular
+TURBO (PRJ-078),,,,,,,,,,
+Business Requirements (TSK001176),,,,,,,,,*IT Director,Regular
+Current State Analysis (TSK001175),,,,,,,,,*IT Director,Regular
+Data Analysis (TSK001174),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (New Features) (TSK001180),,,,,,,,,*IT Director,Regular
+Development - Bug Fix (Production) (TSK001181),,,,,,,,,*IT Director,Regular
+Development - New Features (TSK001178),,,,,,,,,*IT Director,Regular
+Development - Technical Debt (TSK001179),,,,,,,,,*IT Director,Regular
+"Production Support, Monitoring & Triage (TSK001182)",,,,,,,,,*IT Director,Regular
+Project Execution (TSK000808),,,,,,,,,*IT Director,Regular
+Project Management (TSK001583),,,,,,,,,*IT Director,Regular
+Technical Design & Documentation (TSK001177),,,,,,,,,*IT Director,Regular
+Testing - New Features (TSK001183),,,,,,,,,*IT Director,Regular
+Testing - Technical Debt (TSK001184),,,,,,,,,*IT Director,Regular

@@ -447,7 +447,8 @@ class ObsidianDailySync:
                 if isinstance(task.due.date, str):
                     due_date = datetime.fromisoformat(task.due.date).date()
                 else:
-                    due_date = task.due.date
+                    # Handle datetime.datetime objects by extracting the date
+                    due_date = task.due.date.date() if hasattr(task.due.date, 'date') else task.due.date
                 
                 # Categorize task
                 if due_date < today:
