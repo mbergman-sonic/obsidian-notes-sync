@@ -13,6 +13,7 @@ Authentication: Uses Device Flow (user logs in via browser, no stored passwords)
 
 USAGE:
     python sync_daily_notes.py              # Normal sync (first run: login via browser)
+    python sync_daily_notes.py --date 2026-06-02  # Sync a specific date (e.g., plan tomorrow)
     python sync_daily_notes.py --test       # Test connectivity only
     python sync_daily_notes.py --verbose    # Detailed output
     python sync_daily_notes.py --help       # Show options
@@ -23,15 +24,36 @@ import re
 import sys
 import argparse
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from dotenv import load_dotenv
-from todoist_api_python.api import TodoistAPI
-import httpx
-import msal
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
+
+try:
+    from todoist_api_python.api import TodoistAPI
+except ImportError:
+    TodoistAPI = None
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+try:
+    import msal
+except ImportError:
+    msal = None
+
 import requests
 import logging
-from exchangelib import Credentials, Account, Configuration
+
+try:
+    from exchangelib import Credentials, Account, Configuration
+except ImportError:
+    Credentials = Account = Configuration = None
 
 # Setup logging
 logging.basicConfig(
@@ -61,191 +83,121 @@ SKIP_PATTERNS = [
     "break",
 ]
 MIN_EVENT_DURATION_MINUTES = 30
+TASK_SECTION_ORDER = ("Overdue", "Due today", "Due this week")
+TASK_SECTION_PLACEHOLDERS = {
+    "Overdue": "{{overdue_tasks}}",
+    "Due today": "{{due_today_tasks}}",
+    "Due this week": "{{due_this_week_tasks}}",
+}
+TASK_SECTION_DUE_DEFAULTS = {
+    "Overdue": -1,
+    "Due today": 0,
+}
+TODOIST_ID_COMMENT_PREFIX = "todoist-id:"
 # ============================================================================
 
 class GraphAPIClient:
-    """Microsoft Graph API client with interactive browser-based authentication."""
-    
-    # Public client ID for Outlook/Graph access
-    CLIENT_ID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"  # Azure CLI default
+    """Microsoft Graph API client with persistent MSAL token caching."""
+
+    CLIENT_ID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
     GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0"
     AUTHORITY = "https://login.microsoftonline.com/common"
     SCOPES = ["Calendars.Read"]
-    
-    def __init__(self, client_id=None):
-        """Initialize Graph API client with MSAL and interactive auth."""
+
+    def __init__(self, client_id=None, access_token=None):
+        if msal is None:
+            raise ImportError('msal is required for Microsoft Graph authentication')
         self.client_id = client_id or self.CLIENT_ID
-        self.access_token = None
-        self.token_cache_file = Path.home() / ".cache" / "obsidian_sync_token.json"
+        self.access_token = access_token
+        self.last_error = None
+        self.token_cache_file = Path.home() / ".cache" / "obsidian_sync_msal_cache.json"
         self.token_cache_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize MSAL app
+        self.token_cache = msal.SerializableTokenCache()
+        self._load_token_cache()
         self.app = msal.PublicClientApplication(
             client_id=self.client_id,
-            authority=self.AUTHORITY
+            authority=self.AUTHORITY,
+            token_cache=self.token_cache,
         )
-        
-        # Try to load cached token
-        self._load_cached_token()
-    
-    def _load_cached_token(self):
-        """Load cached access token if it exists and is still valid."""
+
+    def _load_token_cache(self):
         try:
             if self.token_cache_file.exists():
-                with open(self.token_cache_file, 'r') as f:
-                    cache = json.load(f)
-                    self.access_token = cache.get('access_token')
-                    expires_at = cache.get('expires_at')
-                    
-                    # Check if token is still valid (with 5 min buffer)
-                    if expires_at and datetime.fromtimestamp(expires_at) > datetime.now() + timedelta(minutes=5):
-                        logger.debug("Using cached access token")
-                        return
-                    
-                    self.access_token = None
+                self.token_cache.deserialize(self.token_cache_file.read_text(encoding='utf-8'))
         except Exception as e:
-            logger.debug(f"Could not load cached token: {e}")
-            self.access_token = None
-    
-    def _save_cached_token(self, token):
-        """Cache the access token with expiration time."""
+            logger.warning(f"Could not load MSAL token cache: {e}")
+
+    def _save_token_cache(self):
         try:
-            expires_at = (datetime.now() + timedelta(seconds=3600)).timestamp()
-            cache = {
-                'access_token': token,
-                'expires_at': expires_at
-            }
-            
-            with open(self.token_cache_file, 'w') as f:
-                json.dump(cache, f)
-            logger.debug("Cached access token")
+            if self.token_cache.has_state_changed:
+                self.token_cache_file.write_text(self.token_cache.serialize(), encoding='utf-8')
         except Exception as e:
-            logger.warning(f"Could not cache token: {e}")
-    
-    def ensure_authenticated(self):
-        """Ensure we have a valid access token via interactive browser login."""
+            logger.warning(f"Could not save MSAL token cache: {e}")
+
+    def ensure_authenticated(self, allow_interactive=True):
+        """Ensure we have an access token, preferring silent cache refresh."""
+        self.last_error = None
         if self.access_token:
-            logger.debug("Using existing access token")
             return True
-        
-        print("\n" + "="*70)
+
+        try:
+            accounts = self.app.get_accounts()
+            if accounts:
+                result = self.app.acquire_token_silent(self.SCOPES, account=accounts[0])
+                if result and 'access_token' in result:
+                    self.access_token = result['access_token']
+                    self._save_token_cache()
+                    logger.debug("Authenticated with cached Microsoft token")
+                    return True
+        except Exception as e:
+            logger.warning(f"Silent Microsoft auth failed: {e}")
+
+        if not allow_interactive:
+            self.last_error = 'Microsoft Graph authentication requires an interactive sign-in'
+            logger.warning(self.last_error)
+            return False
+
+        print("\n" + "=" * 70)
         print("🔐 MICROSOFT OUTLOOK AUTHENTICATION")
-        print("="*70 + "\n")
+        print("=" * 70 + "\n")
         print("A browser window will open for you to sign in...")
         print("Sign in with your Microsoft account that has Outlook calendar access.\n")
-        
+
         try:
-            # Try interactive authentication (opens browser)
             result = self.app.acquire_token_interactive(
                 scopes=self.SCOPES,
-                prompt='select_account'
+                prompt='select_account',
             )
-            
-            if 'access_token' in result:
-                self.access_token = result['access_token']
-                self._save_cached_token(self.access_token)
-                print("✅ Authentication successful!\n")
-                logger.info(f"Authenticated with Microsoft Graph (expires in {result.get('expires_in', 3600)}s)")
-                return True
-            else:
+            if 'access_token' not in result:
                 error = result.get('error_description', result.get('error', 'Unknown error'))
+                self.last_error = error
                 logger.error(f"Authentication failed: {error}")
                 print(f"❌ Authentication failed: {error}\n")
                 return False
-                
+
+            self.access_token = result['access_token']
+            self._save_token_cache()
+            print("✅ Authentication successful!\n")
+            logger.info(
+                "Authenticated with Microsoft Graph (expires in %ss)",
+                result.get('expires_in', 3600),
+            )
+            return True
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Authentication error: {e}")
             print(f"❌ Authentication error: {e}\n")
             return False
-    
-    def get_calendar_events(self, start_date=None, end_date=None):
-        """Fetch calendar events from a date range."""
-        if not self.ensure_authenticated():
-            logger.error("Not authenticated - cannot fetch calendar events")
-            return []
-        
-        if not start_date:
-            start_date = datetime.now().date()
-        if not end_date:
-            end_date = start_date
-        
-        # Format dates for Graph API (RFC 3339)
-        start_datetime = datetime.combine(start_date, datetime.min.time())
-        end_datetime = datetime.combine(end_date, datetime.max.time())
-        
-        events_url = f"{self.GRAPH_ENDPOINT}/me/calendarview"
-        headers = {
-            'Authorization': f'Bearer {self.access_token}',
-            'Content-Type': 'application/json',
-            'Prefer': 'outlook.timezone="UTC"'
-        }
-        params = {
-            'startDateTime': start_datetime.isoformat() + 'Z',
-            'endDateTime': end_datetime.isoformat() + 'Z',
-            '$orderby': 'start/dateTime',
-            '$top': 50
-        }
-        
-        try:
-            logger.debug(f"Fetching calendar events from {start_date} to {end_date}")
-            logger.debug(f"Request URL: {events_url}")
-            logger.debug(f"Request params: {params}")
-            
-            response = requests.get(events_url, headers=headers, params=params, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            events = data.get('value', [])
-            
-            logger.info(f"Retrieved {len(events)} calendar events")
-            
-            # Convert to simple object format
-            formatted_events = []
-            for event in events:
-                try:
-                    formatted_event = {
-                        'subject': event.get('subject', 'Untitled'),
-                        'start': event.get('start', {}),
-                        'end': event.get('end', {}),
-                        'is_all_day': event.get('isAllDay', False),
-                        'location': event.get('location', {}),
-                        'body_preview': event.get('bodyPreview', '')
-                    }
-                    formatted_events.append(formatted_event)
-                    logger.debug(f"  Event: {formatted_event['subject']} at {formatted_event['start'].get('dateTime', 'N/A')}")
-                except Exception as e:
-                    logger.error(f"Error processing event: {e}")
-            
-            return formatted_events
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching calendar events: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response status: {e.response.status_code}")
-                logger.error(f"Response body: {e.response.text}")
-            return []
-        except Exception as e:
-            logger.error(f"Unexpected error fetching calendar: {e}")
-            return []
 
-
-class GraphAPIClient:
-    """Client for accessing Microsoft Graph API with direct token authentication."""
-    
-    def __init__(self, access_token=None):
-        self.access_token = access_token
-        self.GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0"
-    
-    def get_calendar_events(self, start_date, end_date):
+    def get_calendar_events(self, start_date, end_date, allow_interactive=True):
         """Fetch calendar events from Microsoft Graph API."""
-        if not self.access_token:
-            logger.error("No access token provided for Graph API")
+        if not self.ensure_authenticated(allow_interactive=allow_interactive):
+            logger.error("No valid Microsoft Graph token available")
             return []
-        
-        # Format dates for Graph API (RFC 3339)
-        start_datetime = datetime.combine(start_date, datetime.min.time())
-        end_datetime = datetime.combine(end_date, datetime.max.time())
-        
+
+        start_datetime = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        end_datetime = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
+
         events_url = f"{self.GRAPH_ENDPOINT}/me/calendarview"
         headers = {
             'Authorization': f'Bearer {self.access_token}',
@@ -253,26 +205,25 @@ class GraphAPIClient:
             'Prefer': 'outlook.timezone="Eastern Standard Time"'
         }
         params = {
-            'startDateTime': start_datetime.isoformat() + 'Z',
-            'endDateTime': end_datetime.isoformat() + 'Z',
+            'startDateTime': start_datetime.isoformat().replace('+00:00', 'Z'),
+            'endDateTime': end_datetime.isoformat().replace('+00:00', 'Z'),
             '$orderby': 'start/dateTime',
             '$top': 50
         }
-        
+
         try:
             logger.debug(f"Fetching calendar events from {start_date} to {end_date}")
             logger.debug(f"Request URL: {events_url}")
             logger.debug(f"Request params: {params}")
-            
+
             response = requests.get(events_url, headers=headers, params=params, timeout=10)
             response.raise_for_status()
-            
+
             data = response.json()
             events = data.get('value', [])
-            
+
             logger.info(f"Retrieved {len(events)} calendar events")
-            
-            # Convert to simple object format
+
             formatted_events = []
             for event in events:
                 try:
@@ -288,16 +239,18 @@ class GraphAPIClient:
                     logger.debug(f"  Event: {formatted_event['subject']} at {formatted_event['start'].get('dateTime', 'N/A')}")
                 except Exception as e:
                     logger.error(f"Error processing event: {e}")
-            
+
             return formatted_events
-            
+
         except requests.exceptions.RequestException as e:
+            self.last_error = str(e)
             logger.error(f"Error fetching calendar events: {e}")
             if hasattr(e, 'response') and e.response is not None:
                 logger.error(f"Response status: {e.response.status_code}")
                 logger.error(f"Response body: {e.response.text}")
             return []
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Unexpected error fetching calendar: {e}")
             return []
 
@@ -377,8 +330,9 @@ class ObsidianDailySync:
         self.todoist_token = os.getenv('TODOIST_API_TOKEN')
         self.vault_path = Path(os.getenv('OBSIDIAN_VAULT_PATH'))
         
-        # Graph API access token
+        # Optional Graph API access token for non-interactive fallback
         self.graph_access_token = os.getenv('GRAPH_ACCESS_TOKEN')
+        self.allow_interactive_graph_auth = True
         
         # Output path: Work/Sonic/Daily/YYYY-MM-DD_Agenda.md
         self.work_folder = "Work"
@@ -398,6 +352,8 @@ class ObsidianDailySync:
         try:
             # Initialize Todoist
             if self.todoist_token:
+                if TodoistAPI is None or httpx is None:
+                    raise ImportError('todoist_api_python and httpx are required for Todoist sync')
                 todoist_client = httpx.Client(trust_env=False)
                 self.todoist = TodoistAPI(self.todoist_token, client=todoist_client)
                 logger.info("Todoist client initialized")
@@ -408,21 +364,21 @@ class ObsidianDailySync:
         
         try:
             # Initialize Microsoft Graph client
+            self.graph_client = GraphAPIClient(access_token=self.graph_access_token)
             if self.graph_access_token:
-                self.graph_client = GraphAPIClient(access_token=self.graph_access_token)
-                logger.info("Microsoft Graph client initialized")
+                logger.info("Microsoft Graph client initialized with explicit access token")
             else:
-                logger.warning("GRAPH_ACCESS_TOKEN not set")
+                logger.info("Microsoft Graph client initialized with MSAL cache support")
         except Exception as e:
             logger.error(f"Failed to initialize Graph client: {e}")
     
-    def get_todoist_tasks(self):
+    def get_todoist_tasks(self, target_date=None):
         """Fetch tasks from Todoist and organize by due date."""
         if not self.todoist:
             return {'overdue': [], 'due_today': [], 'due_this_week': []}
         
         try:
-            today = datetime.now().date()
+            today = target_date or datetime.now().date()
             week_end = today + timedelta(days=7)
             
             overdue = []
@@ -484,6 +440,33 @@ class ObsidianDailySync:
             return []
 
     @staticmethod
+    def extract_note_task_metadata(text):
+        """Parse an Obsidian task line body into content, due date, and priority."""
+        if not text:
+            return {"content": "", "due_date": None, "priority": 1}
+
+        body = text.strip()
+        priority = 1
+        priority_map = {"🔴": 4, "🟠": 3, "🟡": 2}
+
+        priority_match = re.search(r"\s*(\U0001F534|\U0001F7E0|\U0001F7E1)\s*$", body)
+        if priority_match:
+            priority = priority_map[priority_match.group(1)]
+            body = body[:priority_match.start()].rstrip()
+
+        due_date = None
+        due_match = re.search(r"\s*\(due:\s*(\d{4}-\d{2}-\d{2})\)\s*$", body)
+        if due_match:
+            due_date_str = due_match.group(1)
+            try:
+                due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+            except ValueError:
+                logger.warning(f"Invalid due date in note task: {due_date_str}")
+            body = body[:due_match.start()].rstrip()
+
+        return {"content": body.strip(), "due_date": due_date, "priority": priority}
+
+    @staticmethod
     def normalize_task_text(text):
         """Normalize task text for matching by content."""
         if not text:
@@ -494,65 +477,137 @@ class ObsidianDailySync:
     @staticmethod
     def clean_checked_task_text(text):
         """Remove due date and priority suffixes from a checked task line."""
-        cleaned = text.strip()
-        cleaned = re.sub(r'\s*\(due:\s*\d{4}-\d{2}-\d{2}\)\s*$', '', cleaned)
-        cleaned = re.sub(r'\s*[🔴🟠🟡]+\s*$', '', cleaned)
-        return cleaned.strip()
+        return ObsidianDailySync.extract_note_task_metadata(text)["content"]
 
-    def extract_checked_todoist_task_texts(self, content):
-        """Extract checked task texts from the task sections of the agenda note."""
+    def extract_note_task_items(self, content):
+        """Extract markdown task items from the Todoist-managed note sections."""
         if not content:
             return []
 
         section_pattern = r'### (Overdue|Due today|Due this week)\s*(.*?)(?=\n### |\n---|\Z)'
-        checked_texts = []
+        task_items = []
 
         for match in re.finditer(section_pattern, content, flags=re.S):
+            section_name = match.group(1)
             section_body = match.group(2)
             for line in section_body.splitlines():
-                item_match = re.match(r'^\s*[-*+]\s*\[[xX]\]\s*(.+)$', line)
-                if item_match:
-                    cleaned = self.clean_checked_task_text(item_match.group(1))
-                    if cleaned:
-                        checked_texts.append(cleaned)
+                item_match = re.match(
+                    r'^\s*[-*+]\s*\[(?P<checked>[ xX])\]\s*(?P<body>.+?)\s*(?:<!--\s*todoist-id:(?P<task_id>[^>\s]+)\s*-->)?\s*$',
+                    line,
+                )
+                if not item_match:
+                    continue
+
+                metadata = self.extract_note_task_metadata(item_match.group('body'))
+                content_text = metadata["content"]
+                if not content_text:
+                    continue
+
+                task_items.append({
+                    'section': section_name,
+                    'checked': item_match.group('checked').lower() == 'x',
+                    'content': content_text,
+                    'normalized_content': self.normalize_task_text(content_text),
+                    'due_date': metadata["due_date"],
+                    'priority': metadata["priority"],
+                    'todoist_id': item_match.group('task_id'),
+                })
+
+        return task_items
+
+    def extract_checked_todoist_task_texts(self, content):
+        """Extract checked task texts from the task sections of the agenda note."""
+        checked_texts = []
+        for item in self.extract_note_task_items(content):
+            if item['checked']:
+                checked_texts.append(item['content'])
 
         return checked_texts
 
-    def complete_checked_todoist_items(self, note_content):
-        """Mark checked Todoist task items in the agenda note as complete in Todoist."""
+    def resolve_new_note_task_due_date(self, task_item, target_date):
+        """Resolve the Todoist due date for a new task created from an Obsidian note item."""
+        if task_item['due_date']:
+            return task_item['due_date']
+
+        default_offset = TASK_SECTION_DUE_DEFAULTS.get(task_item['section'])
+        if default_offset is None:
+            return None
+
+        return target_date + timedelta(days=default_offset)
+
+    def sync_note_tasks_to_todoist(self, note_content, target_date):
+        """Create new Todoist tasks from note items and complete checked ones."""
         if not self.todoist or not note_content:
-            return 0
+            return {'created': 0, 'completed': 0}
 
-        checked_texts = self.extract_checked_todoist_task_texts(note_content)
-        if not checked_texts:
-            return 0
+        active_tasks = self.get_all_active_todoist_tasks() or []
 
-        active_tasks = self.get_all_active_todoist_tasks()
-        if not active_tasks:
-            return 0
-
+        tasks_by_id = {}
         tasks_by_normalized = {}
         for task in active_tasks:
+            tasks_by_id[str(task.id)] = task
             task_text = self.normalize_task_text(task.content)
             tasks_by_normalized.setdefault(task_text, []).append(task)
 
+        created_count = 0
         completed_count = 0
-        for checked_text in checked_texts:
-            normalized = self.normalize_task_text(checked_text)
-            if normalized in tasks_by_normalized and tasks_by_normalized[normalized]:
-                task = tasks_by_normalized[normalized].pop(0)
+
+        for item in self.extract_note_task_items(note_content):
+            task = None
+            if item['todoist_id']:
+                task = tasks_by_id.get(str(item['todoist_id']))
+            elif tasks_by_normalized.get(item['normalized_content']):
+                task = tasks_by_normalized[item['normalized_content']][0]
+
+            if item['checked']:
+                if not task:
+                    logger.warning(f"Skipping checked note task without Todoist match: {item['content']}")
+                    continue
                 try:
                     if self.todoist.complete_task(task.id):
                         completed_count += 1
                         logger.info(f"Marked Todoist task complete from note: {task.content} ({task.id})")
+                        tasks_by_id.pop(str(task.id), None)
+                        if tasks_by_normalized.get(item['normalized_content']):
+                            tasks_by_normalized[item['normalized_content']] = [
+                                candidate for candidate in tasks_by_normalized[item['normalized_content']]
+                                if str(candidate.id) != str(task.id)
+                            ]
                     else:
                         logger.warning(f"Failed to mark Todoist task complete: {task.content} ({task.id})")
                 except Exception as e:
                     logger.error(f"Error completing Todoist task '{task.content}' ({task.id}): {e}")
+                continue
 
-        return completed_count
+            if task:
+                continue
+
+            due_date = self.resolve_new_note_task_due_date(item, target_date)
+            if due_date is None:
+                logger.warning(
+                    "Skipping note task without due date under '%s': %s. Add '(due: YYYY-MM-DD)' to push it to Todoist.",
+                    item['section'],
+                    item['content'],
+                )
+                continue
+
+            try:
+                created_task = self.todoist.add_task(
+                    item['content'],
+                    due_date=due_date,
+                    priority=item['priority'],
+                )
+                created_count += 1
+                logger.info(f"Created Todoist task from note: {created_task.content} ({created_task.id})")
+                tasks_by_id[str(created_task.id)] = created_task
+                tasks_by_normalized.setdefault(item['normalized_content'], []).append(created_task)
+            except Exception as e:
+                logger.error(f"Error creating Todoist task from note '{item['content']}': {e}")
+
+        return {'created': created_count, 'completed': completed_count}
 
     def format_tasks_markdown(self, tasks, category="today"):
+
         """Format tasks as markdown list with due dates."""
         if not tasks:
             return "*No tasks*"
@@ -570,18 +625,62 @@ class ObsidianDailySync:
                 priority_map = {4: "🔴", 3: "🟠", 2: "🟡"}
                 priority_indicator = f" {priority_map.get(task.priority, '')}"
             
-            formatted.append(f"- [ ] {task.content}{due_date_str}{priority_indicator}")
+            todoist_id_comment = f" <!-- {TODOIST_ID_COMMENT_PREFIX}{task.id} -->"
+            formatted.append(f"- [ ] {task.content}{due_date_str}{priority_indicator}{todoist_id_comment}")
         
         return "\n".join(formatted)
     
-    def get_exchange_calendar_events(self):
-        """Fetch today's calendar events from Microsoft Graph."""
+    @staticmethod
+    def normalize_calendar_event(event):
+        """Normalize connector or Graph event payloads to the agenda event shape."""
+        if not event:
+            return {
+                'subject': 'Untitled',
+                'start': {},
+                'end': {},
+                'is_all_day': False,
+                'location': {},
+                'body_preview': '',
+            }
+
+        return {
+            'subject': event.get('subject') or event.get('display_title') or 'Untitled',
+            'start': event.get('start') or {},
+            'end': event.get('end') or {},
+            'is_all_day': event.get('is_all_day', event.get('isAllDay', False)),
+            'location': event.get('location') or {},
+            'body_preview': event.get('body_preview', event.get('bodyPreview', '')),
+        }
+
+    def load_calendar_events_from_file(self, file_path):
+        """Load normalized calendar events from a JSON file written by Codex."""
+        path = Path(file_path)
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+
+        if isinstance(payload, dict) and 'value' in payload:
+            raw_events = payload.get('value') or []
+        elif isinstance(payload, list):
+            raw_events = payload
+        else:
+            raise ValueError(f'Unsupported calendar payload format in {path}')
+
+        normalized_events = [self.normalize_calendar_event(event) for event in raw_events]
+        logger.info("Loaded %s calendar event(s) from %s", len(normalized_events), path)
+        return normalized_events
+
+    def get_exchange_calendar_events(self, target_date=None):
+        """Fetch calendar events for the target date from Microsoft Graph."""
         if not self.graph_client:
             return []
         
         try:
-            today = datetime.now().date()
-            events = self.graph_client.get_calendar_events(today, today)
+            day = target_date or datetime.now().date()
+            events = self.graph_client.get_calendar_events(
+                day,
+                day,
+                allow_interactive=self.allow_interactive_graph_auth,
+            )
             return events
         except Exception as e:
             logger.error(f"Error fetching calendar events: {e}")
@@ -647,9 +746,36 @@ class ObsidianDailySync:
                 location_parts.append("Zoom")
         
         return " | ".join(location_parts) if location_parts else ""
+
+    def get_event_duration_minutes(self, event):
+        """Return event duration in minutes, or None when unavailable."""
+        try:
+            start_str = event.get('start', {}).get('dateTime')
+            end_str = event.get('end', {}).get('dateTime')
+            if not start_str or not end_str:
+                return None
+            start = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+            end = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+            duration_minutes = int(round((end - start).total_seconds() / 60.0))
+            return max(duration_minutes, 0)
+        except Exception as e:
+            logger.debug(f"Could not calculate event duration in minutes: {e}")
+            return None
+
+    def format_duration_cell(self, duration_minutes):
+        """Format a duration minute count for the agenda calendar table."""
+        if duration_minutes is None:
+            return ""
+        if duration_minutes < 60:
+            return f"{duration_minutes}m"
+        hours = duration_minutes // 60
+        minutes = duration_minutes % 60
+        if minutes == 0:
+            return f"{hours}h"
+        return f"{hours}h {minutes}m"
     
     def format_calendar_table(self, events):
-        """Format calendar events as markdown table with Location/Link column."""
+        """Format calendar events as markdown table with duration and location/link columns."""
         # Filter events based on criteria
         filtered_events = [e for e in events if self.should_include_event(e)]
         
@@ -668,7 +794,7 @@ class ObsidianDailySync:
         
         sorted_events = sorted(filtered_events, key=get_start_time)
         
-        table = "| Time | Event | Location/Link |\n|---|---|---|\n"
+        table = "| Time | Length | Event | Location/Link |\n|---|---|---|---|\n"
         
         for event in sorted_events:
             try:
@@ -693,12 +819,14 @@ class ObsidianDailySync:
             # Truncate long titles
             if len(subject) > 40:
                 subject = subject[:37] + "..."
-            
+
+            duration_minutes = self.get_event_duration_minutes(event)
+            duration_cell = self.format_duration_cell(duration_minutes)
             location = self.extract_event_location(event)
             
             logger.debug(f"Event '{subject}': {start_str} ({timezone}) -> {start_time}")
-            table += f"| {start_time} | {subject} | {location} |\n"
-            logger.debug(f"Added to table: | {start_time} | {subject} | {location} |")
+            table += f"| {start_time} | {duration_cell} | {subject} | {location} |\n"
+            logger.debug(f"Added to table: | {start_time} | {duration_cell} | {subject} | {location} |")
         
         return table
     
@@ -791,14 +919,28 @@ class ObsidianDailySync:
             subject = event.get('subject', 'Untitled')
             meeting_notes += f"### {time_str} — {subject}\n\n"
         
-        # Replace placeholders
-        updated_content = content.replace('{{overdue_tasks}}', overdue_tasks)
-        updated_content = updated_content.replace('{{due_today_tasks}}', due_today_tasks)
-        updated_content = updated_content.replace('{{due_this_week_tasks}}', due_this_week_tasks)
+        updated_content = content
+        updated_content = self.replace_task_section(updated_content, "Overdue", overdue_tasks)
+        updated_content = self.replace_task_section(updated_content, "Due today", due_today_tasks)
+        updated_content = self.replace_task_section(updated_content, "Due this week", due_this_week_tasks)
         updated_content = updated_content.replace('{{calendar_table}}', calendar_table)
         updated_content = updated_content.replace('{{meeting_notes}}', meeting_notes.strip())
         
         return updated_content
+
+    def replace_task_section(self, content, section_name, replacement_body):
+        """Replace one Todoist-managed task section while preserving the rest of the note."""
+        placeholder = TASK_SECTION_PLACEHOLDERS[section_name]
+        if placeholder in content:
+            return content.replace(placeholder, replacement_body)
+
+        pattern = rf"(### {re.escape(section_name)}\s*\n)(.*?)(?=\n### |\n---|\Z)"
+        match = re.search(pattern, content, flags=re.S)
+        if not match:
+            logger.warning(f"Could not find task section '{section_name}' in daily note")
+            return content
+
+        return content[:match.start(2)] + replacement_body + content[match.end(2):]
     
     def test_connectivity(self):
         """Test connectivity to Todoist, Microsoft Graph, and Obsidian."""
@@ -889,8 +1031,8 @@ class ObsidianDailySync:
                 print("  • Set TODOIST_API_TOKEN in .env")
                 print("    (Get from: https://todoist.com/app/settings/integrations/developer)")
             if not results['graph']:
-                print("  • Graph API auth failed - check GRAPH_ACCESS_TOKEN in .env")
-                print("  • Make sure your access token is valid and has calendar permissions")
+                print("  • Graph API auth failed - rerun with interactive sign-in")
+                print("  • A cached Microsoft session will be reused on future runs when available")
             if not results['daily_note']:
                 print("  • Template not found - ensure sonic-daily-template.md exists at:")
                 print(f"    {self.template_path}")
@@ -915,17 +1057,19 @@ class ObsidianDailySync:
         except Exception as e:
             print(f"  ❌ Error fetching raw Todoist tasks: {e}")
     
-    def sync(self):
+    def sync(self, target_date=None, calendar_events=None, skip_calendar_fetch=False):
         """Main sync function."""
-        logger.info("Starting daily note sync...")
+        if target_date is None:
+            target_date = datetime.now().date()
+        logger.info(f"Starting daily note sync for {target_date.isoformat()}...")
         
         try:
             # Get daily note path
-            note_path = self.get_daily_note_path()
+            note_path = self.get_daily_note_path(datetime.combine(target_date, datetime.min.time()))
             
             # Read current content, or load template if note doesn't exist
             content = self.read_daily_note(note_path)
-            completed_note_tasks = 0
+            note_task_sync = {'created': 0, 'completed': 0}
             if content is None:
                 logger.info("Daily note doesn't exist, creating from template...")
                 content = self.load_template()
@@ -933,23 +1077,32 @@ class ObsidianDailySync:
                     logger.error("Cannot proceed without template")
                     return False
             else:
-                completed_note_tasks = self.complete_checked_todoist_items(content)
-                if completed_note_tasks > 0:
-                    logger.info(f"Marked {completed_note_tasks} task(s) complete in Todoist from checked note items")
+                note_task_sync = self.sync_note_tasks_to_todoist(content, target_date)
+                if note_task_sync['created'] > 0:
+                    logger.info(f"Created {note_task_sync['created']} task(s) in Todoist from note items")
+                if note_task_sync['completed'] > 0:
+                    logger.info(f"Marked {note_task_sync['completed']} task(s) complete in Todoist from checked note items")
 
             # Fetch data
             logger.info("Fetching Todoist tasks...")
-            tasks = self.get_todoist_tasks()
+            tasks = self.get_todoist_tasks(target_date=target_date)
             
             # Fetch calendar - non-fatal if unavailable
             events = []
             calendar_available = True
-            logger.info("Fetching Outlook calendar events via Microsoft Graph...")
-            try:
-                events = self.get_exchange_calendar_events()
-            except Exception as e:
+            if calendar_events is not None:
+                logger.info("Using externally provided calendar events")
+                events = [self.normalize_calendar_event(event) for event in calendar_events]
+            elif skip_calendar_fetch:
                 calendar_available = False
-                logger.warning(f"Calendar unavailable (will skip calendar events): {e}")
+                logger.info("Skipping calendar fetch by request")
+            else:
+                logger.info("Fetching Outlook calendar events via Microsoft Graph...")
+                try:
+                    events = self.get_exchange_calendar_events(target_date=target_date)
+                except Exception as e:
+                    calendar_available = False
+                    logger.warning(f"Calendar unavailable (will skip calendar events): {e}")
             
             # Update content
             updated_content = self.update_daily_note_content(content, tasks, events)
@@ -968,8 +1121,10 @@ class ObsidianDailySync:
                     print(f"📅 Calendar events: ⚠️ (unavailable - token expired or offline)")
                 else:
                     print(f"📅 Calendar events: {len(events)}")
-                if completed_note_tasks > 0:
-                    print(f"✅ Marked {completed_note_tasks} checked task(s) complete in Todoist")
+                if note_task_sync['created'] > 0:
+                    print(f"Created {note_task_sync['created']} new task(s) in Todoist from Obsidian")
+                if note_task_sync['completed'] > 0:
+                    print(f"Marked {note_task_sync['completed']} checked task(s) complete in Todoist")
             
             return success
         
@@ -986,6 +1141,7 @@ def main():
         epilog="""
 Examples:
   python sync_daily_notes.py              # Run normal sync
+  python sync_daily_notes.py --date 2026-06-02  # Run sync for a specific date
   python sync_daily_notes.py --test       # Test connectivity only
   python sync_daily_notes.py --verbose    # Detailed output
   python sync_daily_notes.py --help       # Show this help
@@ -996,6 +1152,11 @@ Schedule:
         """
     )
     
+    parser.add_argument(
+        '--date',
+        type=str,
+        help='Target agenda date in YYYY-MM-DD format (defaults to today)'
+    )
     parser.add_argument(
         '--test',
         action='store_true',
@@ -1016,9 +1177,33 @@ Schedule:
         action='store_true',
         help='Print all raw Todoist tasks (debugging)'
     )
+    parser.add_argument(
+        '--no-interactive-auth',
+        action='store_true',
+        help='Do not open a browser for Microsoft auth; use cached token only'
+    )
+    parser.add_argument(
+        '--calendar-events-file',
+        type=str,
+        help='Path to a JSON file containing calendar events supplied by Codex or another external source'
+    )
+    parser.add_argument(
+        '--skip-calendar-fetch',
+        action='store_true',
+        help='Do not fetch calendar events inside the script'
+    )
     
     args = parser.parse_args()
     
+    # Parse optional target date
+    target_date = None
+    if args.date:
+        try:
+            target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+        except ValueError:
+            print("❌ Invalid --date value. Use format YYYY-MM-DD, e.g. 2026-06-02")
+            exit(2)
+
     # Configure logging verbosity
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -1026,6 +1211,7 @@ Schedule:
     
     try:
         sync = ObsidianDailySync()
+        sync.allow_interactive_graph_auth = not args.no_interactive_auth
         # Test Todoist raw tasks
         if args.test_tasks:
             sync.test_todoist_raw_tasks()
@@ -1034,9 +1220,18 @@ Schedule:
         if args.test:
             success = sync.test_connectivity()
             exit(0 if success else 1)
+
+        external_calendar_events = None
+        if args.calendar_events_file:
+            external_calendar_events = sync.load_calendar_events_from_file(args.calendar_events_file)
+
         # Normal sync mode
         logger.info("Starting daily note sync...")
-        success = sync.sync()
+        success = sync.sync(
+            target_date=target_date,
+            calendar_events=external_calendar_events,
+            skip_calendar_fetch=args.skip_calendar_fetch,
+        )
         exit(0 if success else 1)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)

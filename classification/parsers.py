@@ -47,6 +47,31 @@ def parse_time_str(time_str: str, date_obj: date) -> Optional[datetime]:
         return None
 
 
+def parse_duration_hours(duration_str: str) -> Optional[float]:
+    """Parse duration text like '30m', '1h', '1h 30m', or '1.5h'."""
+    if not duration_str:
+        return None
+    raw = duration_str.strip().lower()
+    if not raw or raw == "---":
+        return None
+
+    minute_match = re.fullmatch(r'(\d+(?:\.\d+)?)\s*m', raw)
+    if minute_match:
+        return round(float(minute_match.group(1)) / 60.0, 2)
+
+    hour_match = re.fullmatch(r'(\d+(?:\.\d+)?)\s*h', raw)
+    if hour_match:
+        return round(float(hour_match.group(1)), 2)
+
+    hour_minute_match = re.fullmatch(r'(\d+(?:\.\d+)?)\s*h\s+(\d+(?:\.\d+)?)\s*m', raw)
+    if hour_minute_match:
+        hours = float(hour_minute_match.group(1))
+        minutes = float(hour_minute_match.group(2))
+        return round(hours + (minutes / 60.0), 2)
+
+    return None
+
+
 def parse_agenda(markdown_text: str, date_str: str) -> List[Dict]:
     """Parse an agenda markdown document and return a list of event dicts.
 
@@ -98,7 +123,12 @@ def parse_agenda(markdown_text: str, date_str: str) -> List[Dict]:
             if not parts:
                 continue
             time_cell = parts[0] if len(parts) > 0 else ''
-            title_cell = parts[1] if len(parts) > 1 else ''
+            if len(parts) >= 4:
+                duration_cell = parts[1]
+                title_cell = parts[2]
+            else:
+                duration_cell = ''
+                title_cell = parts[1] if len(parts) > 1 else ''
             title = _clean(title_cell)
             time_txt = time_cell
             # time range?
@@ -109,6 +139,9 @@ def parse_agenda(markdown_text: str, date_str: str) -> List[Dict]:
             else:
                 start = parse_time_str(time_txt, d)
                 end = None
+            duration_hours = parse_duration_hours(duration_cell)
+            if start and end is None and duration_hours and duration_hours > 0:
+                end = start + timedelta(hours=duration_hours)
 
             # Skip duplicates (match by title and start if present)
             dup = False
@@ -124,6 +157,8 @@ def parse_agenda(markdown_text: str, date_str: str) -> List[Dict]:
                 continue
 
             ev = Event(title=title, start=start, end=end)
+            if duration_hours is not None:
+                ev.duration_hours = duration_hours
             events.append(ev)
 
     # 3) Compute end times/durations when missing (use next event start or default 60 minutes)
@@ -137,7 +172,11 @@ def parse_agenda(markdown_text: str, date_str: str) -> List[Dict]:
                 e.end = e.start + timedelta(minutes=60)
         if e.end <= e.start:
             e.end = e.start + timedelta(minutes=60)
-        e.duration_hours = round((e.end - e.start).total_seconds() / 3600.0, 2)
+        computed_hours = round((e.end - e.start).total_seconds() / 3600.0, 2)
+        if e.duration_hours and e.duration_hours > 0:
+            e.duration_hours = round(e.duration_hours, 2)
+        else:
+            e.duration_hours = computed_hours
 
     # Convert to serializable dicts
     out = []

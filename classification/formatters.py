@@ -13,8 +13,8 @@ def format_summary_markdown(summary: Dict) -> str:
         return '\n'.join(lines)
 
     # Table header
-    lines.append('| Project | Task | Code | Hours | Event |')
-    lines.append('|---|---|---:|---:|---|')
+    lines.append('| Added to Clarity | Project | Task | Code | Hours | Event |')
+    lines.append('|---|---|---|---:|---:|---|')
     for e in entries:
         proj = e.get('project') or ''
         task = e.get('task_name') or ''
@@ -23,6 +23,6 @@ def format_summary_markdown(summary: Dict) -> str:
         event = e.get('source_event') or ''
         # Escape pipe characters in event text
         event = event.replace('|', '\\|')
-        lines.append(f'| {proj} | {task} | {code} | {hours:.2f} | {event} |')
+        lines.append(f'| [ ] | {proj} | {task} | {code} | {hours:.2f} | {event} |')
 
     return '\n'.join(lines)

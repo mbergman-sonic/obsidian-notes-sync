@@ -73,6 +73,11 @@ python sync_daily_notes.py --test
 python sync_daily_notes.py
 ```
 
+Plan tomorrow tonight:
+```bash
+python sync_daily_notes.py --date 2026-06-02
+```
+
 ### 5. Schedule for M-F 8:00 AM
 ```powershell
 # Open PowerShell as Administrator
@@ -98,6 +103,9 @@ Menu options:
 ```bash
 # Normal sync
 python sync_daily_notes.py
+
+# Sync a specific date (useful for planning tomorrow the night before)
+python sync_daily_notes.py --date 2026-06-02
 
 # Test connectivity to Todoist & Exchange
 python sync_daily_notes.py --test

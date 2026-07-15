@@ -8,6 +8,10 @@ Add a hybrid, rule-first `classify_event` function to map agenda events (title +
 
 ## Requirements (from user)
 
+0. Prioritize these workflow updates before all other plan items:
+   - `sync_daily_notes` calendar table must include an event length column.
+   - `classify` must reference the calendar table and use event length for assigning time.
+   - `classify` must add a checkbox column to the left side of the output table to track whether rows were added to Clarity.
 1. Implement `classify_event(event: dict, clarity_defs: list) -> dict` returning:
    - `task_name`, `task_code`, `project`, `confidence`
 2. Hybrid approach:
@@ -27,6 +31,10 @@ Add a hybrid, rule-first `classify_event` function to map agenda events (title +
 
 ## Implementation plan
 
+0. Implement this ordered pre-work before existing classifier work:
+   - Update calendar rendering in `sync_daily_notes.py` to include event duration/length.
+   - Update classify input parsing to read calendar table duration and use it as the source of assigned time.
+   - Update classify table output to prepend a checkbox column for Clarity completion tracking.
 1. Add `classify_event(event, clarity_defs)` to `classification/classifier.py`:
    - Concatenate `title` and `notes` (lowercased) into a single `text` string.
    - Implement keyword rules as an ordered, easy-to-extend dictionary/list structure in code (single place to add new learned patterns).

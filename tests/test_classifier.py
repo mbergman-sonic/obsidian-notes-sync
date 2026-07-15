@@ -1,6 +1,8 @@
 import unittest
 
 from classification.classifier import classify_event, classify_events
+from classification.parsers import parse_agenda
+from classification.formatters import format_summary_markdown
 
 
 CLARITY_DEFS = [
@@ -83,6 +85,37 @@ class TestClassifyEvents(unittest.TestCase):
         }]
         summary = classify_events(events, CLARITY_DEFS, '2026-05-28', corrections=corrections)
         self.assertEqual(summary['entries'][0]['task_code'], 'TSK001172')
+
+
+class TestAgendaDurationAndOutputFormatting(unittest.TestCase):
+    def test_parse_agenda_uses_calendar_length_for_duration(self):
+        agenda = """## Calendar
+
+| Time | Length | Event | Location/Link |
+|---|---|---|---|
+| 9:00 AM | 30m | Team Sync | Teams |
+| 10:00 AM | 1h 30m | Project Review | Teams |
+"""
+        events = parse_agenda(agenda, '2026-05-28')
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]['duration_hours'], 0.5)
+        self.assertEqual(events[1]['duration_hours'], 1.5)
+
+    def test_summary_markdown_has_leftmost_checkbox_column(self):
+        summary = {
+            'date': '2026-05-28',
+            'entries': [{
+                'project': 'Internal',
+                'task_name': 'Internal Meetings',
+                'task_code': 'INTERNAL',
+                'hours': 1.0,
+                'source_event': 'Team Sync',
+            }],
+            'event_count': 1,
+        }
+        md = format_summary_markdown(summary)
+        self.assertIn('| Added to Clarity | Project | Task | Code | Hours | Event |', md)
+        self.assertIn('| [ ] | Internal | Internal Meetings | INTERNAL | 1.00 | Team Sync |', md)
 
 
 if __name__ == '__main__':
