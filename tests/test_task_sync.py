@@ -78,6 +78,32 @@ class TaskSyncTests(unittest.TestCase):
         self.assertEqual('New task from Obsidian', self.sync.todoist.created[0].content)
         self.assertEqual(date(2026, 7, 9), self.sync.todoist.created[0].due.date)
 
+    def test_load_calendar_events_from_file_maps_tmp_path_on_windows_style_input(self):
+        payload = {
+            'value': [
+                {
+                    'subject': 'Tmp fallback meeting',
+                    'start': {'dateTime': '2026-07-15T14:00:00.0000000', 'timeZone': 'UTC'},
+                    'end': {'dateTime': '2026-07-15T15:00:00.0000000', 'timeZone': 'UTC'},
+                    'location': {'displayName': 'Microsoft Teams Meeting'},
+                    'bodyPreview': '',
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir) / 'codex-calendar-2026-07-15.json'
+            temp_path.write_text(json.dumps(payload), encoding='utf-8')
+            original_gettempdir = tempfile.gettempdir
+            tempfile.gettempdir = lambda: tmpdir
+            try:
+                events = self.sync.load_calendar_events_from_file(r'\tmp\codex-calendar-2026-07-15.json')
+            finally:
+                tempfile.gettempdir = original_gettempdir
+
+        self.assertEqual(1, len(events))
+        self.assertEqual('Tmp fallback meeting', events[0]['subject'])
+
     def test_load_calendar_events_from_file_accepts_connector_payload(self):
         payload = {
             'value': [
@@ -99,6 +125,42 @@ class TaskSyncTests(unittest.TestCase):
         self.assertEqual(1, len(events))
         self.assertEqual('Connector meeting', events[0]['subject'])
         self.assertEqual('Join: https://teams.microsoft.com/meet/example', events[0]['body_preview'])
+
+    def test_format_event_time_converts_utc_to_local_time(self):
+        event = {
+            'subject': 'Interview',
+            'start': {'dateTime': '2026-07-15T20:00:00.0000000', 'timeZone': 'UTC'},
+            'end': {'dateTime': '2026-07-15T21:00:00.0000000', 'timeZone': 'UTC'},
+        }
+
+        time_str = self.sync.format_event_time(event)
+
+        self.assertIn(time_str, {'04:00 PM', '03:00 PM'})
+
+    def test_calendar_table_includes_all_day_and_lunch_events(self):
+        events = [
+            {
+                'subject': 'Lunch',
+                'is_all_day': False,
+                'start': {'dateTime': '2026-07-15T16:00:00.0000000', 'timeZone': 'UTC'},
+                'end': {'dateTime': '2026-07-15T16:30:00.0000000', 'timeZone': 'UTC'},
+                'location': {'displayName': ''},
+                'body_preview': '',
+            },
+            {
+                'subject': 'OOO',
+                'is_all_day': True,
+                'start': {'dateTime': '2026-07-15T00:00:00.0000000', 'timeZone': 'UTC'},
+                'end': {'dateTime': '2026-07-16T00:00:00.0000000', 'timeZone': 'UTC'},
+                'location': {'displayName': ''},
+                'body_preview': '',
+            },
+        ]
+
+        table = self.sync.format_calendar_table(events)
+
+        self.assertIn('Lunch', table)
+        self.assertIn('OOO', table)
 
     def test_sync_uses_external_calendar_events_without_graph_fetch(self):
         self.sync.get_todoist_tasks = lambda target_date=None: {'overdue': [], 'due_today': [], 'due_this_week': []}

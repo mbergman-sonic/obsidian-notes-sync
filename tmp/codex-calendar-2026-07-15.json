@@ -1,0 +1,109 @@
+{
+  "value": [
+    {
+      "subject": "Gabe OOO - Denver Trip",
+      "start": {
+        "dateTime": "2026-07-09T00:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-07-15T00:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "location": {
+        "displayName": ""
+      },
+      "bodyPreview": ""
+    },
+    {
+      "subject": "Michael & Andrew Connect",
+      "start": {
+        "dateTime": "2026-07-15T14:30:00.0000000",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-07-15T15:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "location": {
+        "displayName": "Microsoft Teams Meeting"
+      },
+      "bodyPreview": "IT Security Notice: This email is from an external sender. Microsoft Teams meeting Join: https://teams.microsoft.com/meet/23194197486185?p=xKQtIWhRGxeamKbmkg"
+    },
+    {
+      "subject": "Franchise SFMC Journey Review",
+      "start": {
+        "dateTime": "2026-07-15T15:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-07-15T16:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "location": {
+        "displayName": "Microsoft Teams Meeting"
+      },
+      "bodyPreview": "Purpose: Review SFMC journeys for new, used, and fixed. Outlook Teams meeting Join: https://teams.microsoft.com/meet/277762499601667?p=HHBko4wqmjqTw0NzsL"
+    },
+    {
+      "subject": "Lunch",
+      "start": {
+        "dateTime": "2026-07-15T16:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-07-15T16:30:00.0000000",
+        "timeZone": "UTC"
+      },
+      "location": {
+        "displayName": ""
+      },
+      "bodyPreview": ""
+    },
+    {
+      "subject": "Review Product Ops Plan / Completed / Next Steps",
+      "start": {
+        "dateTime": "2026-07-15T16:30:00.0000000",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-07-15T17:15:00.0000000",
+        "timeZone": "UTC"
+      },
+      "location": {
+        "displayName": "Microsoft Teams Meeting"
+      },
+      "bodyPreview": "One-off invite. Amanda's working plan and open questions. Teams meeting Join: https://teams.microsoft.com/meet/28586616183371?p=GPq2pROkayLGiyQUCj"
+    },
+    {
+      "subject": "Software Development Teams Sync",
+      "start": {
+        "dateTime": "2026-07-15T18:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-07-15T19:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "location": {
+        "displayName": "Teams"
+      },
+      "bodyPreview": "Recurring software development teams sync. Teams meeting."
+    },
+    {
+      "subject": "Director, Mobile Development: Carlton Jester",
+      "start": {
+        "dateTime": "2026-07-15T20:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-07-15T21:00:00.0000000",
+        "timeZone": "UTC"
+      },
+      "location": {
+        "displayName": "Microsoft Teams Meeting"
+      },
+      "bodyPreview": "Confirming Carlton Jester for an interview with you all on Wednesday, July 15th at 4pm ET. Teams meeting Join: https://teams.microsoft.com/meet/25333112437342?p=aAgbayD904MKQfq4l9"
+    }
+  ]
+}

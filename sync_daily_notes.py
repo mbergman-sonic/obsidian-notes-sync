@@ -24,6 +24,7 @@ import re
 import sys
 import argparse
 import json
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 try:
@@ -94,6 +95,7 @@ TASK_SECTION_DUE_DEFAULTS = {
     "Due today": 0,
 }
 TODOIST_ID_COMMENT_PREFIX = "todoist-id:"
+DISPLAY_TIMEZONE_NAME = os.getenv('AGENDA_TIMEZONE', 'America/New_York')
 # ============================================================================
 
 class GraphAPIClient:
@@ -654,8 +656,24 @@ class ObsidianDailySync:
 
     def load_calendar_events_from_file(self, file_path):
         """Load normalized calendar events from a JSON file written by Codex."""
-        path = Path(file_path)
-        with open(path, 'r', encoding='utf-8') as f:
+        requested_path = Path(file_path)
+        candidate_paths = [requested_path]
+
+        raw_path = str(file_path)
+        normalized = raw_path.replace('\\', '/')
+        if normalized.startswith('/tmp/'):
+            candidate_paths.append(Path(tempfile.gettempdir()) / Path(normalized).name)
+        if normalized.startswith('/mnt/'):
+            parts = Path(normalized).parts
+            if len(parts) >= 4 and len(parts[2]) == 1:
+                drive = parts[2].upper() + ':\\'
+                candidate_paths.append(Path(drive, *parts[3:]))
+
+        existing_path = next((candidate for candidate in candidate_paths if candidate.exists()), None)
+        if existing_path is None:
+            raise FileNotFoundError(f'Calendar events file not found. Tried: {candidate_paths}')
+
+        with open(existing_path, 'r', encoding='utf-8') as f:
             payload = json.load(f)
 
         if isinstance(payload, dict) and 'value' in payload:
@@ -663,10 +681,10 @@ class ObsidianDailySync:
         elif isinstance(payload, list):
             raw_events = payload
         else:
-            raise ValueError(f'Unsupported calendar payload format in {path}')
+            raise ValueError(f'Unsupported calendar payload format in {existing_path}')
 
         normalized_events = [self.normalize_calendar_event(event) for event in raw_events]
-        logger.info("Loaded %s calendar event(s) from %s", len(normalized_events), path)
+        logger.info("Loaded %s calendar event(s) from %s", len(normalized_events), existing_path)
         return normalized_events
 
     def get_exchange_calendar_events(self, target_date=None):
@@ -687,38 +705,7 @@ class ObsidianDailySync:
             return []
     
     def should_include_event(self, event):
-        """
-        Return True if this event should appear in the note.
-        
-        Skips:
-        - All-day events
-        - Events matching skip patterns (lunch, focus time, etc.)
-        - Events under MIN_EVENT_DURATION_MINUTES
-        """
-        # Skip all-day events
-        if event.get('is_all_day', False):
-            return False
-        
-        # Skip by title pattern
-        title_lower = event.get('subject', '').lower()
-        for pattern in SKIP_PATTERNS:
-            if pattern in title_lower:
-                return False
-        
-        # Skip short events
-        try:
-            start_str = event.get('start', {}).get('dateTime')
-            end_str = event.get('end', {}).get('dateTime')
-            
-            if start_str and end_str:
-                start = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
-                end = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
-                duration_minutes = (end - start).total_seconds() / 60
-                if duration_minutes < MIN_EVENT_DURATION_MINUTES:
-                    return False
-        except Exception as e:
-            logger.debug(f"Could not calculate event duration: {e}")
-        
+        """Return True so every calendar event appears in the agenda note."""
         return True
     
     def extract_event_location(self, event):
@@ -754,13 +741,73 @@ class ObsidianDailySync:
             end_str = event.get('end', {}).get('dateTime')
             if not start_str or not end_str:
                 return None
-            start = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
-            end = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+            start = self.parse_event_datetime(start_str)
+            end = self.parse_event_datetime(end_str)
             duration_minutes = int(round((end - start).total_seconds() / 60.0))
             return max(duration_minutes, 0)
         except Exception as e:
             logger.debug(f"Could not calculate event duration in minutes: {e}")
             return None
+
+    @staticmethod
+    def _nth_weekday_of_month(year, month, weekday, occurrence):
+        first = datetime(year, month, 1)
+        days_until = (weekday - first.weekday()) % 7
+        return first + timedelta(days=days_until + (occurrence - 1) * 7)
+
+    @classmethod
+    def convert_to_display_timezone(cls, dt):
+        """Convert aware datetimes into the configured agenda timezone."""
+        if dt is None or dt.tzinfo is None:
+            return dt
+
+        if DISPLAY_TIMEZONE_NAME == 'America/New_York':
+            utc_dt = dt.astimezone(timezone.utc)
+            year = utc_dt.year
+            dst_start_local = cls._nth_weekday_of_month(year, 3, 6, 2).replace(hour=2)
+            dst_end_local = cls._nth_weekday_of_month(year, 11, 6, 1).replace(hour=2)
+            dst_start_utc = dst_start_local.replace(tzinfo=timezone(timedelta(hours=-5))).astimezone(timezone.utc)
+            dst_end_utc = dst_end_local.replace(tzinfo=timezone(timedelta(hours=-4))).astimezone(timezone.utc)
+            offset_hours = -4 if dst_start_utc <= utc_dt < dst_end_utc else -5
+            return utc_dt.astimezone(timezone(timedelta(hours=offset_hours)))
+
+        return dt.astimezone()
+
+    @staticmethod
+    def parse_event_datetime(value):
+        """Parse Graph/Outlook timestamps, including 7-digit fractional seconds."""
+        if not value:
+            return None
+
+        normalized = value.replace('Z', '+00:00')
+        if '.' in normalized:
+            prefix, suffix = normalized.split('.', 1)
+            tz_sep = '+' if '+' in suffix else '-' if '-' in suffix else None
+            if tz_sep:
+                fraction, tz = suffix.split(tz_sep, 1)
+                normalized = f"{prefix}.{fraction[:6]}{tz_sep}{tz}"
+            else:
+                normalized = f"{prefix}.{suffix[:6]}"
+        return datetime.fromisoformat(normalized)
+
+    def format_event_time(self, event):
+        """Format an event start time in the configured display timezone."""
+        try:
+            start_obj = event.get('start', {}) or {}
+            start_str = start_obj.get('dateTime')
+            if not start_str:
+                return "--:-- --"
+
+            start_dt = self.parse_event_datetime(start_str)
+            if start_dt is not None and start_dt.tzinfo is None:
+                timezone_name = (start_obj.get('timeZone') or '').upper()
+                if timezone_name == 'UTC':
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+            start_dt = self.convert_to_display_timezone(start_dt)
+            return start_dt.strftime("%I:%M %p")
+        except Exception as e:
+            logger.debug(f"Could not format event time: {e}")
+            return "--:-- --"
 
     def format_duration_cell(self, duration_minutes):
         """Format a duration minute count for the agenda calendar table."""
@@ -787,7 +834,7 @@ class ObsidianDailySync:
             try:
                 start_str = event.get('start', {}).get('dateTime')
                 if start_str:
-                    return datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                    return self.parse_event_datetime(start_str)
             except:
                 pass
             return datetime.now()
@@ -797,24 +844,8 @@ class ObsidianDailySync:
         table = "| Time | Length | Event | Location/Link |\n|---|---|---|---|\n"
         
         for event in sorted_events:
-            try:
-                start_obj = event.get('start', {})
-                start_str = start_obj.get('dateTime')
-                timezone = start_obj.get('timeZone', 'UTC')
-                
-                if start_str:
-                    start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
-                    
-                    # Only convert if the timezone is UTC (not already in Eastern Time)
-                    if timezone == 'UTC':
-                        start_dt = start_dt.replace(hour=start_dt.hour - 4)
-                    
-                    start_time = start_dt.strftime("%I:%M %p")
-                else:
-                    start_time = "--:-- --"
-            except:
-                start_time = "--:-- --"
-            
+            start_time = self.format_event_time(event)
+
             subject = event.get('subject', 'No title')
             # Truncate long titles
             if len(subject) > 40:
@@ -824,7 +855,7 @@ class ObsidianDailySync:
             duration_cell = self.format_duration_cell(duration_minutes)
             location = self.extract_event_location(event)
             
-            logger.debug(f"Event '{subject}': {start_str} ({timezone}) -> {start_time}")
+            logger.debug(f"Event '{subject}' -> {start_time}")
             table += f"| {start_time} | {duration_cell} | {subject} | {location} |\n"
             logger.debug(f"Added to table: | {start_time} | {duration_cell} | {subject} | {location} |")
         
@@ -889,15 +920,15 @@ class ObsidianDailySync:
         # Format calendar table
         calendar_table = self.format_calendar_table(events)
         
-        # Generate meeting notes stubs for included events
-        filtered_events = [e for e in events if self.should_include_event(e)]
+        # Generate meeting notes stubs for all events
+        filtered_events = events
         
         # Sort by start time
         def get_start_time(event):
             try:
                 start_str = event.get('start', {}).get('dateTime')
                 if start_str:
-                    return datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                    return self.parse_event_datetime(start_str)
             except:
                 pass
             return datetime.now()
@@ -906,16 +937,8 @@ class ObsidianDailySync:
         
         meeting_notes = ""
         for event in sorted_events:
-            try:
-                start_str = event.get('start', {}).get('dateTime')
-                if start_str:
-                    start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
-                    time_str = start_dt.strftime("%I:%M %p")
-                else:
-                    time_str = "--:-- --"
-            except:
-                time_str = "--:-- --"
-            
+            time_str = self.format_event_time(event)
+
             subject = event.get('subject', 'Untitled')
             meeting_notes += f"### {time_str} — {subject}\n\n"
         
@@ -923,10 +946,37 @@ class ObsidianDailySync:
         updated_content = self.replace_task_section(updated_content, "Overdue", overdue_tasks)
         updated_content = self.replace_task_section(updated_content, "Due today", due_today_tasks)
         updated_content = self.replace_task_section(updated_content, "Due this week", due_this_week_tasks)
-        updated_content = updated_content.replace('{{calendar_table}}', calendar_table)
-        updated_content = updated_content.replace('{{meeting_notes}}', meeting_notes.strip())
+        updated_content = self.replace_generated_section(
+            updated_content,
+            "## 📅 Calendar",
+            calendar_table,
+            "## 📝 Meeting notes",
+            "{{calendar_table}}",
+        )
+        updated_content = self.replace_generated_section(
+            updated_content,
+            "## 📝 Meeting notes",
+            meeting_notes.strip(),
+            "## 🚦 Blockers & next steps",
+            "{{meeting_notes}}",
+        )
         
         return updated_content
+
+    
+    @staticmethod
+    def replace_generated_section(content, heading, replacement, next_heading, placeholder):
+        """Replace a rendered section as well as its original template placeholder."""
+        section_pattern = rf"(^{re.escape(heading)}\s*$\n)(.*?)(?=^{re.escape(next_heading)}\s*$)"
+        if re.search(section_pattern, content, flags=re.MULTILINE | re.DOTALL):
+            return re.sub(
+                section_pattern,
+                lambda match: f"{match.group(1)}\n{replacement.strip()}\n\n",
+                content,
+                count=1,
+                flags=re.MULTILINE | re.DOTALL,
+            )
+        return content.replace(placeholder, replacement)
 
     def replace_task_section(self, content, section_name, replacement_body):
         """Replace one Todoist-managed task section while preserving the rest of the note."""
